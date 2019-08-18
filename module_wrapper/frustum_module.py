@@ -1,34 +1,35 @@
 import importlib
 
-from ..train.test import inference
 from ..train import provider
 from ..kitti.kitti_object import get_lidar_in_image_fov
 from ..models.model_util import g_type2class, g_class2type, g_type2onehotclass
 
 import tensorflow as tf
+import numpy as np
 
-def init_args():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', type=int, default=0, help='GPU to use [default: GPU 0]')
-    parser.add_argument('--num_point', type=int, default=1024, help='Point Number [default: 1024]')
-    parser.add_argument('--model', default='frustum_pointnets_v1', help='Model name [default: frustum_pointnets_v1]')
-    parser.add_argument('--model_path', default='log/model.ckpt', help='model checkpoint file path [default: log/model.ckpt]')
-    parser.add_argument('--batch_size', type=int, default=32, help='batch size for inference [default: 32]')
-    parser.add_argument('--output', default='test_results', help='output file/folder name [default: test_results]')
-    parser.add_argument('--data_path', default=None, help='frustum dataset pickle filepath [default: None]')
-    parser.add_argument('--from_rgb_detection', action='store_true', help='test from dataset files from rgb detection.')
-    parser.add_argument('--idx_path', default=None, help='filename of txt where each line is a data idx, used for rgb detection -- write <id>.txt for all frames. [default: None]')
-    parser.add_argument('--dump_result', action='store_true', help='If true, also dump results to .pickle file')
-    FLAGS = parser.parse_args()
+# def init_args():
+#     import argparse
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('--gpu', type=int, default=0, help='GPU to use [default: GPU 0]')
+#     parser.add_argument('--num_point', type=int, default=1024, help='Point Number [default: 1024]')
+#     parser.add_argument('--model', default='frustum_pointnets_v1', help='Model name [default: frustum_pointnets_v1]')
+#     parser.add_argument('--model_path', default='log/model.ckpt', help='model checkpoint file path [default: log/model.ckpt]')
+#     parser.add_argument('--batch_size', type=int, default=32, help='batch size for inference [default: 32]')
+#     parser.add_argument('--output', default='test_results', help='output file/folder name [default: test_results]')
+#     parser.add_argument('--data_path', default=None, help='frustum dataset pickle filepath [default: None]')
+#     parser.add_argument('--from_rgb_detection', action='store_true', help='test from dataset files from rgb detection.')
+#     parser.add_argument('--idx_path', default=None, help='filename of txt where each line is a data idx, used for rgb detection -- write <id>.txt for all frames. [default: None]')
+#     parser.add_argument('--dump_result', action='store_true', help='If true, also dump results to .pickle file')
+#     FLAGS = parser.parse_args()
 
-    return FLAGS
+#     return FLAGS
 
 
 def batch_inference_network(pcs, one_hot_vecs, sess, ops):
     # compared with original inference function, this function works for each batch
     # and does not return scores
 
+    ep = ops['end_points'] 
     feed_dict = {\
         ops['pointclouds_pl']: pcs,
         ops['one_hot_vec_pl']: one_hot_vecs,
@@ -55,7 +56,6 @@ def process_2d_detections(boxes_2d, labels, calib, pc_velo, img,
                             type_whitelist=['Car', 'Pedestrian', 'Cyclist'], img_height_threshold=25, lidar_point_threshold=5):
     # from extract_frustum_data_rgb_detection in prepare_data.py
     type_list = []
-    prob_list = []
     input_list = []
     frustum_angle_list = []
 
@@ -93,7 +93,7 @@ def from_2d_detections_to_frustum(type_list, input_list, frustum_angle_list, npo
         one_hot_vec[g_type2onehotclass[cls_type]] = 1
 
         # rotate_to_center = True
-        point_set = np.copy(self.input_list[i])
+        point_set = np.copy(input_list[i])
         point_set = provider.rotate_pc_along_y(point_set, rot_angle)
         # Resample
         choice = np.random.choice(point_set.shape[0], replace=True)
@@ -136,13 +136,13 @@ def get_pc_in_box_and_angle(calib, pc_velo, img, box_2d ):
 
 
 class FrustumModule(object):
-    def __init__(self, params=None):
+    def __init__(self, params):
         # ros subscriber: point cloud, 2D boxes (position and label), camera intrinsics, cam-lidar extrinsics
         # ros publisher: 3D boxes(position and label)
         # initialize parameters
         # initialize the network instance
-        if params is None:
-            params = init_args()
+        # if params is None:
+        #     params = init_args()
         self.FLAGS = params
         # Set training configurations
         self.BATCH_SIZE = self.FLAGS.batch_size
@@ -208,7 +208,7 @@ class FrustumModule(object):
             from_2d_detections_to_frustum(type_list, input_list, frustum_angle_list, npoints=self.NUM_POINT, nchannels=self.NUM_CHANNEL)
 
         batch_outputs, batch_centers, batch_heading_cls, batch_heading_res, \
-            batch_size_cls, batch_size_res = 
+            batch_size_cls, batch_size_res = \
                 batch_inference_network(point_set_list, one_hot_vec_list, self.sess, self.ops)
 
         hs = []
