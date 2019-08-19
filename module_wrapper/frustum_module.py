@@ -45,9 +45,9 @@ def batch_inference_network(pcs, one_hot_vecs, sess, ops):
 
     batch_outputs = np.argmax(batch_logits, 2)
     batch_heading_cls = np.argmax(batch_heading_scores, 1) # B
-    batch_heading_res = np.array([batch_heading_residuals[i,batch_heading_cls[i]] for i in range(pcs.shape[0])])
+    batch_heading_res = np.array([batch_heading_residuals[i,batch_heading_cls[i]] for i in range(len(pcs))])
     batch_size_cls = np.argmax(batch_size_scores, 1) # B
-    batch_size_res = np.vstack([batch_size_residuals[i,batch_size_cls[i],:] for i in range(pcs.shape[0])])
+    batch_size_res = np.vstack([batch_size_residuals[i,batch_size_cls[i],:] for i in range(len(pcs))])
     
     return batch_outputs, batch_centers, batch_heading_cls, batch_heading_res, \
     batch_size_cls, batch_size_res
@@ -59,7 +59,7 @@ def process_2d_detections(boxes_2d, labels, calib, pc_velo, img,
     input_list = []
     frustum_angle_list = []
 
-    for i in range(boxes_2d.shape[0]):
+    for i in range(len(boxes_2d)):
         label = labels[i]
         box_2d = boxes_2d[i]
 
@@ -78,12 +78,12 @@ def process_2d_detections(boxes_2d, labels, calib, pc_velo, img,
 
     return type_list, input_list, frustum_angle_list
 
-def from_2d_detections_to_frustum(type_list, input_list, frustum_angle_list, npoints, nchannels):
+def from_2d_detections_to_frustum(type_list, input_list, frustum_angle_list, npoints, nchannels, batch_size):
     # from FrustumDataset in provider.py and get_batch_from_rgb_detection in train_utils.py
     point_set_list = []
     rot_angle_list = []
     one_hot_vec_list = []
-    for i in range(frustum_angle_list.shape[0]):
+    for i in range(len(frustum_angle_list)):
         rot_angle = np.pi/2.0 + frustum_angle_list[i]
 
         # one_hot = True
@@ -96,12 +96,22 @@ def from_2d_detections_to_frustum(type_list, input_list, frustum_angle_list, npo
         point_set = np.copy(input_list[i])
         point_set = provider.rotate_pc_along_y(point_set, rot_angle)
         # Resample
-        choice = np.random.choice(point_set.shape[0], replace=True)
+        choice = np.random.choice(point_set.shape[0], size=npoints, replace=True)
         point_set = point_set[choice, 0:nchannels]
 
         point_set_list.append(point_set)
         rot_angle_list.append(rot_angle)
         one_hot_vec_list.append(one_hot_vec)
+    
+    while len(point_set_list) < batch_size:
+        point_set_list.append(point_set)
+        rot_angle_list.append(rot_angle)
+        one_hot_vec_list.append(one_hot_vec)
+
+    if len(point_set_list) > batch_size:
+        point_set_list = point_set_list[0:batch_size]
+        rot_angle_list = rot_angle_list[0:batch_size]
+        one_hot_vec_list = one_hot_vec_list[0:batch_size]
 
     return point_set_list, rot_angle_list, one_hot_vec_list
 
@@ -201,16 +211,6 @@ class FrustumModule(object):
         """
 
         """
-        type_list, input_list, frustum_angle_list = \
-            process_2d_detections(boxes_2d, labels, calib_cam_imu, pcs_in, img)
-
-        point_set_list, rot_angle_list, one_hot_vec_list = \
-            from_2d_detections_to_frustum(type_list, input_list, frustum_angle_list, npoints=self.NUM_POINT, nchannels=self.NUM_CHANNEL)
-
-        batch_outputs, batch_centers, batch_heading_cls, batch_heading_res, \
-            batch_size_cls, batch_size_res = \
-                batch_inference_network(point_set_list, one_hot_vec_list, self.sess, self.ops)
-
         hs = []
         ws = []
         ls = []
@@ -218,11 +218,34 @@ class FrustumModule(object):
         tys = []
         tzs = []
         rys = []
-        
-        for i in range(labels.shape[0]):
-            hs[i],ws[i],ls[i],txs[i],tys[i],tzs[i],rys[i] = provider.from_prediction_to_label_format(batch_centers[i],
-                batch_heading_cls[i], batch_heading_res[i],
-                batch_size_cls[i], batch_size_res[i], rot_angle_list[i])
+        type_list = []
+        if len(boxes_2d) != 0: 
+            type_list, input_list, frustum_angle_list = \
+                process_2d_detections(boxes_2d, labels, calib_cam_imu, pcs_in, img)
+
+            if len(input_list) != 0: 
+                true_length = len(input_list)
+
+                hs = [None]*true_length
+                ws = [None]*true_length
+                ls = [None]*true_length
+                txs = [None]*true_length
+                tys = [None]*true_length
+                tzs = [None]*true_length
+                rys = [None]*true_length
+                        
+
+                point_set_list, rot_angle_list, one_hot_vec_list = \
+                    from_2d_detections_to_frustum(type_list, input_list, frustum_angle_list, npoints=self.NUM_POINT, nchannels=self.NUM_CHANNEL, batch_size=self.BATCH_SIZE)
+
+                batch_outputs, batch_centers, batch_heading_cls, batch_heading_res, \
+                    batch_size_cls, batch_size_res = \
+                        batch_inference_network(point_set_list, one_hot_vec_list, self.sess, self.ops)
+                
+                for i in range( true_length ):
+                    hs[i],ws[i],ls[i],txs[i],tys[i],tzs[i],rys[i] = provider.from_prediction_to_label_format(batch_centers[i],
+                        batch_heading_cls[i], batch_heading_res[i],
+                        batch_size_cls[i], batch_size_res[i], rot_angle_list[i])
 
         return hs, ws, ls, txs, tys, tzs, rys, type_list
             
